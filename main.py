@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Depends, status, Header
+from fastapi import FastAPI, HTTPException, Depends, Query
 from pydantic import BaseModel
 from typing import Optional
 from fastapi.security import (
@@ -263,8 +263,16 @@ class PostDetail(BaseModel):
 
 
 @app.get("/posts/")
-async def get_posts(current_user: str = Depends(get_current_user)):
-    posts = await db["posts"].find().to_list(length=100)
+async def get_posts(current_user: str = Depends(get_current_user),search: Optional[str] = Query(None)):
+    search_query = {}
+    if search:
+        search_query = {
+            "$text": {
+                "$search": search
+            }
+        }
+
+    posts = await db["posts"].find(search_query).to_list(length=100)
 
     for post in posts:
         post["_id"] = str(post["_id"])
