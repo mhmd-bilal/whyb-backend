@@ -28,6 +28,8 @@ import os
 from dotenv import load_dotenv, dotenv_values
 from colorthief import ColorThief  # type: ignore
 from io import BytesIO
+import spotipy # type: ignore
+from spotipy.oauth2 import SpotifyClientCredentials # type: ignore
 
 load_dotenv()
 
@@ -93,50 +95,26 @@ db = client["whyb_data"]
 bearer_scheme = HTTPBearer()
 
 
-def initialize_driver():
-    chrome_options = Options()
-    chrome_options.add_argument("--headless") 
-    chrome_options.add_argument("--disable-gpu")
-    chrome_options.add_argument("--no-sandbox") 
-    chrome_options.add_argument("--disable-dev-shm-usage")
-
-    browserless_url = 'wss://chrome.browserless.io/webdriver'
-    capabilities = DesiredCapabilities.CHROME.copy()
-
-    driver = webdriver.Remote(
-        command_executor=browserless_url,
-        options=chrome_options,
-        keep_alive=True
-    )
-
-    return driver
 def get_spotify_details(link):
-    driver = initialize_driver()
-    try:
-        driver.get(link)
+    client_id = os.getenv("SPOTIFY_CLIENT_ID")
+    client_secret = os.getenv("SPOTIFY_CLIENT_SECRET")
 
-        WebDriverWait(driver, 10).until(
-            EC.presence_of_element_located((By.XPATH, '//meta[@property="og:title"]'))
-        )
-
-        soup = BeautifulSoup(driver.page_source, "html.parser")
-
-        title = soup.find("meta", property="og:title")
-        description = soup.find("meta", property="og:description")
-        image = soup.find("meta", property="og:image")
-
-        return {
-            "song_name": title["content"] if title else "Title not found",
-            "album": description["content"] if description else "Description not found",
-            "song_image": image["content"] if image else "Image not found",
-            "song_url": link,
-            "song_provider": "Spotify",
-            "song_duration": "N/A",
-            "artist": "Unknown Artist",
-        }
-    finally:
-        driver.quit()
-
+    auth_manager = SpotifyClientCredentials(client_id=client_id, client_secret=client_secret)
+    sp = spotipy.Spotify(auth_manager=auth_manager)
+    
+    track_id = link.split("/")[-1].split("?")[0]
+    
+    track = sp.track(track_id)
+    
+    return {
+        "song_name": track["name"],
+        "album": track["album"]["name"],
+        "song_image": track["album"]["images"][0]["url"],
+        "song_url": link,
+        "song_provider": "Spotify",
+        "song_duration": track["duration_ms"] / 1000,  # Convert duration to seconds
+        "artist": track["artists"][0]["name"],
+    }
 
 def get_youtube_details(link):
     headers = {
