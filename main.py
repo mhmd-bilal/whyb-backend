@@ -14,6 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service as ChromeService
 from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.desired_capabilities import DesiredCapabilities
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.common.by import By
@@ -94,14 +95,21 @@ bearer_scheme = HTTPBearer()
 
 def initialize_driver():
     chrome_options = Options()
-    chrome_options.add_argument("--headless")
+    chrome_options.add_argument("--headless") 
     chrome_options.add_argument("--disable-gpu")
-    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--no-sandbox") 
     chrome_options.add_argument("--disable-dev-shm-usage")
-    service = ChromeService()
-    return webdriver.Chrome(service=service, options=chrome_options)
 
+    browserless_url = 'wss://chrome.browserless.io/webdriver'
+    capabilities = DesiredCapabilities.CHROME.copy()
 
+    driver = webdriver.Remote(
+        command_executor=browserless_url,
+        options=chrome_options,
+        keep_alive=True
+    )
+
+    return driver
 def get_spotify_details(link):
     driver = initialize_driver()
     try:
