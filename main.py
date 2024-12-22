@@ -71,6 +71,7 @@ class Post(BaseModel):
 
 class User(BaseModel):
     name: str
+    username: str
     email: str
     password: str
     bio: Optional[str] = None
@@ -218,6 +219,7 @@ async def signin(form_data: UserLogin):
     # Create access token
     access_token = create_access_token(data={"sub": user["email"]})
     return {
+        "user_id":str(user["_id"]),
         "access_token": access_token,
         "token_type": "Bearer",
         "message": "You are logged in.",
@@ -236,7 +238,6 @@ from bson import ObjectId
 @app.get("/user/{user_id}/")
 async def get_user(user_id: str, current_user: str = Depends(get_current_user)):
     try:
-        # Convert the string user_id to ObjectId
         user_object_id = ObjectId(user_id)
     except Exception as e:
         raise HTTPException(status_code=400, detail="Invalid user ID format")
@@ -245,10 +246,46 @@ async def get_user(user_id: str, current_user: str = Depends(get_current_user)):
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    # Convert the ObjectId to a string for JSON serialization
     user["_id"] = str(user["_id"])
 
-    return {"user": user}
+    posts_count = await db["posts"].count_documents({"user_id": user_object_id})
+    comments_count = await db["comments"].count_documents({"user_id": user_object_id})
+    likes_count = await db["likes"].count_documents({"user_id": user_object_id})
+    followers_count = await db["follows"].count_documents({"followee_id": user_object_id})
+    following_count = await db["follows"].count_documents({"follower_id": user_object_id})
+
+    # Get user's posts
+    posts = await db["posts"].find({"user_id": user_object_id}).to_list(length=100)
+    for post in posts:
+        post["_id"] = str(post["_id"])
+        post["user_id"] = str(post["user_id"])
+
+    # Get user's comments with associated post details
+    comments = await db["comments"].find({"user_id": user_object_id}).to_list(length=100)
+    for comment in comments:
+        comment["_id"] = str(comment["_id"])
+        comment["user_id"] = str(comment["user_id"])
+        comment["post_id"] = str(comment["post_id"])
+        
+        # Get the associated post's song_image
+        post = await db["posts"].find_one({"_id": ObjectId(comment["post_id"])})
+        if post:
+            comment["song_image"] = post.get("song_image", None)
+        else:
+            comment["song_image"] = None
+
+    return {
+        "user": user,
+        "posts": posts,
+        "comments": comments,
+        "stats": {
+            "posts_count": posts_count,
+            "comments_count": comments_count,
+            "likes_count": likes_count,
+            "followers_count": followers_count,
+            "following_count": following_count
+        }
+    }
 
 
 class PostDetail(BaseModel):
@@ -282,7 +319,7 @@ async def get_posts(current_user: str = Depends(get_current_user),search: Option
 
         user = await db["users"].find_one({"_id": user_id})
         if user:
-            post["user_name"] = user.get("name", "Unknown")
+            post["name"] = user.get("name", "Unknown")
 
     return {"posts": posts}
 
@@ -336,9 +373,36 @@ async def get_post(post_id: str, current_user: str = Depends(get_current_user)):
     if not post:
         raise HTTPException(status_code=404, detail="Post not found")
 
+    # Get comments for this post
+    comments = await db["comments"].find({"post_id": post_object_id}).to_list(length=100)
+    for comment in comments:
+        comment["_id"] = str(comment["_id"])
+        comment["user_id"] = str(comment["user_id"])
+        comment["post_id"] = str(comment["post_id"])
+        # Add user info to each comment
+        comment_user = await db["users"].find_one({"_id": ObjectId(comment["user_id"])})
+        if comment_user:
+            comment["name"] = comment_user.get("name")
+            comment["username"] = comment_user.get("username")
+
+    # Get likes count
+    likes_count = await db["likes"].count_documents({"post_id": post_object_id})
+
+    # Convert ObjectId to string for JSON serialization
     post["_id"] = str(post["_id"])
     post["user_id"] = str(post["user_id"])
-    return {"post": post}
+
+    # Get post author info
+    post_user = await db["users"].find_one({"_id": ObjectId(post["user_id"])})
+    if post_user:
+        post["name"] = post_user.get("name")
+        post["username"] = post_user.get("username")
+
+    return {
+        "post": post,
+        "comments": comments,
+        "likes_count": likes_count
+    }
 
 
 class Comment(BaseModel):
@@ -437,7 +501,6 @@ async def get_user_posts(user_id: str, current_user: str = Depends(get_current_u
         post["user_id"] = str(post["user_id"])
     return {"posts": posts}
 
-
 @app.get("/user/{user_id}/comments/")
 async def get_user_comments(
     user_id: str, current_user: str = Depends(get_current_user)
@@ -447,11 +510,85 @@ async def get_user_comments(
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid user ID format")
 
-    comments = (
-        await db["comments"].find({"user_id": user_object_id}).to_list(length=100)
-    )
+    # Fetch comments by user_id
+    comments = await db["comments"].find({"user_id": user_object_id}).to_list(length=100)
+
+    # Initialize a list to store enriched comments
+    enriched_comments = []
+
     for comment in comments:
         comment["_id"] = str(comment["_id"])
         comment["user_id"] = str(comment["user_id"])
         comment["post_id"] = str(comment["post_id"])
-    return {"comments": comments}
+
+        post = await db["posts"].find_one({"_id": ObjectId(comment["post_id"])})
+        if post:
+            comment["song_image"] = post.get("song_image", None)
+        else:
+            comment["song_image"] = None 
+
+        enriched_comments.append(comment)
+
+    return {"comments": enriched_comments}
+
+
+class UserUpdate(BaseModel):
+    name: Optional[str] = None
+    email: Optional[str] = None
+    bio: Optional[str] = None
+
+@app.put("/user/{user_id}/")
+async def update_user(
+    user_id: str, 
+    user_data: UserUpdate, 
+    current_user: str = Depends(get_current_user)
+):
+    try:
+        user_object_id = ObjectId(user_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid user ID format")
+
+    # Verify the current user is updating their own profile
+    user = await db["users"].find_one({"email": current_user})
+    if not user or str(user["_id"]) != user_id:
+        raise HTTPException(status_code=403, detail="Not authorized to update this user")
+
+    # Create update dict with only provided fields
+    update_data = {
+        k: v for k, v in user_data.dict(exclude_unset=True).items() 
+        if v is not None
+    }
+
+    if not update_data:
+        raise HTTPException(status_code=400, detail="No valid update data provided")
+
+    # If email is being updated, check it's not already taken
+    if "email" in update_data:
+        existing_user = await db["users"].find_one({
+            "email": update_data["email"],
+            "_id": {"$ne": user_object_id}
+        })
+        if existing_user:
+            raise HTTPException(status_code=400, detail="Email already in use")
+
+    # Update the user
+    result = await db["users"].update_one(
+        {"_id": user_object_id},
+        {"$set": update_data}
+    )
+
+    if result.modified_count == 0:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # Get updated user data
+    updated_user = await db["users"].find_one({"_id": user_object_id})
+    updated_user["_id"] = str(updated_user["_id"])
+
+    return {
+        "message": "User updated successfully",
+        "user": {
+            "name": updated_user["name"],
+            "email": updated_user["email"],
+            "bio": updated_user.get("bio", "")
+        }
+    }
