@@ -300,26 +300,77 @@ class PostDetail(BaseModel):
 
 
 @app.get("/posts/")
-async def get_posts(current_user: str = Depends(get_current_user),search: Optional[str] = Query(None)):
-    search_query = {}
-    if search:
-        search_query = {
-            "$text": {
-                "$search": search
+async def get_posts(current_user: str = Depends(get_current_user), search: Optional[str] = Query(None)):
+    if not search:
+        # If no search term, return all posts with user info
+        posts = await db["posts"].find({}).to_list(length=100)
+    else:
+        # Search in posts collection
+        posts_pipeline = [
+            {
+                "$match": {
+                    "$or": [
+                        {"song_name": {"$regex": search, "$options": "i"}},
+                        {"artist": {"$regex": search, "$options": "i"}},
+                        {"album": {"$regex": search, "$options": "i"}},
+                        {"caption": {"$regex": search, "$options": "i"}}
+                    ]
+                }
             }
-        }
+        ]
+        posts = await db["posts"].aggregate(posts_pipeline).to_list(length=100)
 
-    posts = await db["posts"].find(search_query).to_list(length=100)
+        users_pipeline = [
+            {
+                "$match": {
+                    "$or": [
+                        {"name": {"$regex": search, "$options": "i"}},
+                        {"username": {"$regex": search, "$options": "i"}}
+                    ]
+                }
+            },
+            {
+                "$lookup": {
+                    "from": "posts",
+                    "localField": "_id",
+                    "foreignField": "user_id",
+                    "as": "user_posts"
+                }
+            },
+            {"$unwind": "$user_posts"},
+            {
+                "$project": {
+                    "_id": "$user_posts._id",
+                    "song_url": "$user_posts.song_url",
+                    "song_name": "$user_posts.song_name",
+                    "song_image": "$user_posts.song_image",
+                    "song_duration": "$user_posts.song_duration",
+                    "song_provider": "$user_posts.song_provider",
+                    "album": "$user_posts.album",
+                    "artist": "$user_posts.artist",
+                    "caption": "$user_posts.caption",
+                    "user_id": "$user_posts.user_id",
+                    "date": "$user_posts.date",
+                    "context_color": "$user_posts.context_color"
+                }
+            }
+        ]
+        user_posts = await db["users"].aggregate(users_pipeline).to_list(length=100)
+        
+        posts = {str(post["_id"]): post for post in posts + user_posts}.values()
+        posts = list(posts)
 
     for post in posts:
         post["_id"] = str(post["_id"])
         post["user_id"] = str(post["user_id"])
 
         user_id = ObjectId(post["user_id"])
-
         user = await db["users"].find_one({"_id": user_id})
         if user:
             post["name"] = user.get("name", "Unknown")
+            post["username"] = user.get("username", "Unknown")
+
+        post["likes_count"] = await db["likes"].count_documents({"post_id": post["_id"]})
 
     return {"posts": posts}
 
@@ -388,6 +439,12 @@ async def get_post(post_id: str, current_user: str = Depends(get_current_user)):
     # Get likes count
     likes_count = await db["likes"].count_documents({"post_id": post_object_id})
 
+    # Check if the current user has liked the post
+    user = await db["users"].find_one({"email": current_user})
+    liked = False
+    if user:
+        liked = await db["likes"].find_one({"user_id": user["_id"], "post_id": post_object_id}) is not None
+
     # Convert ObjectId to string for JSON serialization
     post["_id"] = str(post["_id"])
     post["user_id"] = str(post["user_id"])
@@ -401,7 +458,8 @@ async def get_post(post_id: str, current_user: str = Depends(get_current_user)):
     return {
         "post": post,
         "comments": comments,
-        "likes_count": likes_count
+        "likes_count": likes_count,
+        "liked": liked  # Return whether the current user has liked the post
     }
 
 
@@ -448,17 +506,20 @@ async def add_like(post_id: str, current_user: str = Depends(get_current_user)):
     existing_like = await db["likes"].find_one(
         {"user_id": user["_id"], "post_id": post_object_id}
     )
+
     if existing_like:
-        raise HTTPException(status_code=400, detail="Post already liked")
-
-    like_data = {
-        "user_id": user["_id"],
-        "post_id": post_object_id,
-        "date": datetime.utcnow(),
-    }
-
-    result = await db["likes"].insert_one(like_data)
-    return {"message": "Post liked successfully"}
+        # If the like already exists, remove it
+        await db["likes"].delete_one({"_id": existing_like["_id"]})
+        return {"message": "Like removed successfully"}
+    else:
+        # If the like does not exist, add it
+        like_data = {
+            "user_id": user["_id"],
+            "post_id": post_object_id,
+            "date": datetime.utcnow(),
+        }
+        await db["likes"].insert_one(like_data)
+        return {"message": "Post liked successfully"}
 
 
 @app.post("/users/{user_id}/follow/")
@@ -548,12 +609,10 @@ async def update_user(
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid user ID format")
 
-    # Verify the current user is updating their own profile
     user = await db["users"].find_one({"email": current_user})
     if not user or str(user["_id"]) != user_id:
         raise HTTPException(status_code=403, detail="Not authorized to update this user")
 
-    # Create update dict with only provided fields
     update_data = {
         k: v for k, v in user_data.dict(exclude_unset=True).items() 
         if v is not None
@@ -562,7 +621,6 @@ async def update_user(
     if not update_data:
         raise HTTPException(status_code=400, detail="No valid update data provided")
 
-    # If email is being updated, check it's not already taken
     if "email" in update_data:
         existing_user = await db["users"].find_one({
             "email": update_data["email"],
@@ -571,7 +629,6 @@ async def update_user(
         if existing_user:
             raise HTTPException(status_code=400, detail="Email already in use")
 
-    # Update the user
     result = await db["users"].update_one(
         {"_id": user_object_id},
         {"$set": update_data}
@@ -580,7 +637,6 @@ async def update_user(
     if result.modified_count == 0:
         raise HTTPException(status_code=404, detail="User not found")
 
-    # Get updated user data
     updated_user = await db["users"].find_one({"_id": user_object_id})
     updated_user["_id"] = str(updated_user["_id"])
 
