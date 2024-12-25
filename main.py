@@ -390,6 +390,10 @@ async def get_posts(
             {"post_id": ObjectId(post["_id"])}
         )
 
+        post["comments_count"] = await db["comments"].count_documents(
+            {"post_id": ObjectId(post["_id"])}
+        )
+
     return {"posts": posts}
 
 
