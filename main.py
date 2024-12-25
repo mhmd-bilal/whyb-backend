@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Depends, Query
+from fastapi import FastAPI, HTTPException, Depends, Query, Request
 from pydantic import BaseModel
 from typing import Optional
 from fastapi.security import (
@@ -30,6 +30,7 @@ from colorthief import ColorThief  # type: ignore
 from io import BytesIO
 import spotipy  # type: ignore
 from spotipy.oauth2 import SpotifyClientCredentials  # type: ignore
+from fastapi.responses import JSONResponse
 
 load_dotenv()
 
@@ -198,7 +199,7 @@ def read_root():
 async def signup(user: User):
     existing_user = await db["users"].find_one({"email": user.email})
     if existing_user:
-        raise HTTPException(status_code=400, detail="Email already registered")
+        return JSONResponse(status_code=400, content=ErrorResponse(message="Email already registered").dict())
 
     hashed_password = hash_password(user.password)
 
@@ -213,11 +214,11 @@ async def signup(user: User):
 async def signin(form_data: UserLogin):
     user = await db["users"].find_one({"email": form_data.email})
     if not user:
-        raise HTTPException(status_code=401, detail="Invalid credentials")
+        return JSONResponse(status_code=401, content=ErrorResponse(message="Invalid credentials").dict())
 
     hashed_password = hash_password(form_data.password)
     if hashed_password != user["password"]:
-        raise HTTPException(status_code=401, detail="Invalid credentials")
+        return JSONResponse(status_code=401, content=ErrorResponse(message="Invalid credentials").dict())
 
     # Create access token
     access_token = create_access_token(data={"sub": user["email"]})
@@ -241,12 +242,12 @@ from bson import ObjectId
 async def get_user(user_id: str, current_user: str = Depends(get_current_user)):
     try:
         user_object_id = ObjectId(user_id)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail="Invalid user ID format")
+    except Exception:
+        return JSONResponse(status_code=400, content=ErrorResponse(message="Invalid user ID format. Please provide a valid ID.").dict())
 
     user = await db["users"].find_one({"_id": user_object_id})
     if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+        return JSONResponse(status_code=404, content=ErrorResponse(message="User not found. Please check the ID and try again.").dict())
 
     user["_id"] = str(user["_id"])
 
@@ -396,12 +397,12 @@ async def get_posts(
 async def create_post(post: Post, current_user: str = Depends(get_current_user)):
     user = await db["users"].find_one({"email": current_user})
     if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+        return JSONResponse(status_code=404, content=ErrorResponse(message="User not found").dict())
 
     song_data = get_song_details(post.song_url)
 
     if "error" in song_data:
-        raise HTTPException(status_code=400, detail=song_data["error"])
+        return JSONResponse(status_code=400, content=ErrorResponse(message=song_data["error"]).dict())
 
     image_url = song_data["song_image"]
     response = requests.get(image_url)
@@ -435,11 +436,11 @@ async def get_post(post_id: str, current_user: str = Depends(get_current_user)):
     try:
         post_object_id = ObjectId(post_id)
     except Exception:
-        raise HTTPException(status_code=400, detail="Invalid post ID format")
+        return JSONResponse(status_code=400, content=ErrorResponse(message="Invalid post ID format. Please provide a valid ID.").dict())
 
     post = await db["posts"].find_one({"_id": post_object_id})
     if not post:
-        raise HTTPException(status_code=404, detail="Post not found")
+        return JSONResponse(status_code=404, content=ErrorResponse(message="Post not found. Please check the ID and try again.").dict())
 
     comments = (
         await db["comments"].find({"post_id": post_object_id}).to_list(length=100)
@@ -495,11 +496,11 @@ async def add_comment(
     try:
         post_object_id = ObjectId(post_id)
     except Exception:
-        raise HTTPException(status_code=400, detail="Invalid post ID format")
+        return JSONResponse(status_code=400, content=ErrorResponse(message="Invalid post ID format. Please provide a valid ID.").dict())
 
     user = await db["users"].find_one({"email": current_user})
     if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+        return JSONResponse(status_code=404, content=ErrorResponse(message="User not found. Please log in and try again.").dict())
 
     comment_data = comment.dict()
     comment_data["user_id"] = user["_id"]
@@ -518,29 +519,24 @@ async def add_like(post_id: str, current_user: str = Depends(get_current_user)):
     try:
         post_object_id = ObjectId(post_id)
     except Exception:
-        raise HTTPException(status_code=400, detail="Invalid post ID format")
+        return JSONResponse(status_code=400, content=ErrorResponse(message="Invalid post ID format. Please provide a valid ID.").dict())
 
     user = await db["users"].find_one({"email": current_user})
     if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+        return JSONResponse(status_code=404, content=ErrorResponse(message="User not found. Please log in and try again.").dict())
 
-    existing_like = await db["likes"].find_one(
-        {"user_id": user["_id"], "post_id": post_object_id}
-    )
-
+    existing_like = await db["likes"].find_one({"user_id": user["_id"], "post_id": post_object_id})
     if existing_like:
-        # If the like already exists, remove it
         await db["likes"].delete_one({"_id": existing_like["_id"]})
-        return {"message": "Like removed successfully"}
+        return {"message": "Like removed successfully."}
     else:
-        # If the like does not exist, add it
         like_data = {
             "user_id": user["_id"],
             "post_id": post_object_id,
             "date": datetime.utcnow(),
         }
         await db["likes"].insert_one(like_data)
-        return {"message": "Post liked successfully"}
+        return {"message": "Post liked successfully."}
 
 
 @app.post("/users/{user_id}/follow/")
@@ -630,34 +626,32 @@ async def update_user(
     try:
         user_object_id = ObjectId(user_id)
     except Exception:
-        raise HTTPException(status_code=400, detail="Invalid user ID format")
+        return JSONResponse(status_code=400, content=ErrorResponse(message="Invalid user ID format. Please provide a valid ID.").dict())
 
     user = await db["users"].find_one({"email": current_user})
     if not user or str(user["_id"]) != user_id:
-        raise HTTPException(
-            status_code=403, detail="Not authorized to update this user"
-        )
+        return JSONResponse(status_code=403, content=ErrorResponse(message="Not authorized to update this user.").dict())
 
     update_data = {
         k: v for k, v in user_data.dict(exclude_unset=True).items() if v is not None
     }
 
     if not update_data:
-        raise HTTPException(status_code=400, detail="No valid update data provided")
+        return JSONResponse(status_code=400, content=ErrorResponse(message="No valid update data provided.").dict())
 
     if "email" in update_data:
         existing_user = await db["users"].find_one(
             {"email": update_data["email"], "_id": {"$ne": user_object_id}}
         )
         if existing_user:
-            raise HTTPException(status_code=400, detail="Email already in use")
+            return JSONResponse(status_code=400, content=ErrorResponse(message="Email already in use.").dict())
 
     result = await db["users"].update_one(
         {"_id": user_object_id}, {"$set": update_data}
     )
 
     if result.modified_count == 0:
-        raise HTTPException(status_code=404, detail="User not found")
+        return JSONResponse(status_code=404, content=ErrorResponse(message="User not found.").dict())
 
     updated_user = await db["users"].find_one({"_id": user_object_id})
     updated_user["_id"] = str(updated_user["_id"])
@@ -670,3 +664,8 @@ async def update_user(
             "bio": updated_user.get("bio", ""),
         },
     }
+
+
+# Define a custom error response model
+class ErrorResponse(BaseModel):
+    message: str
