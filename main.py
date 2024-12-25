@@ -28,8 +28,8 @@ import os
 from dotenv import load_dotenv, dotenv_values
 from colorthief import ColorThief  # type: ignore
 from io import BytesIO
-import spotipy # type: ignore
-from spotipy.oauth2 import SpotifyClientCredentials # type: ignore
+import spotipy  # type: ignore
+from spotipy.oauth2 import SpotifyClientCredentials  # type: ignore
 
 load_dotenv()
 
@@ -100,13 +100,15 @@ def get_spotify_details(link):
     client_id = os.getenv("SPOTIFY_CLIENT_ID")
     client_secret = os.getenv("SPOTIFY_CLIENT_SECRET")
 
-    auth_manager = SpotifyClientCredentials(client_id=client_id, client_secret=client_secret)
+    auth_manager = SpotifyClientCredentials(
+        client_id=client_id, client_secret=client_secret
+    )
     sp = spotipy.Spotify(auth_manager=auth_manager)
-    
+
     track_id = link.split("/")[-1].split("?")[0]
-    
+
     track = sp.track(track_id)
-    
+
     return {
         "song_name": track["name"],
         "album": track["album"]["name"],
@@ -116,6 +118,7 @@ def get_spotify_details(link):
         "song_duration": track["duration_ms"] / 1000,  # Convert duration to seconds
         "artist": track["artists"][0]["name"],
     }
+
 
 def get_youtube_details(link):
     headers = {
@@ -219,14 +222,13 @@ async def signin(form_data: UserLogin):
     # Create access token
     access_token = create_access_token(data={"sub": user["email"]})
     return {
-        "user_id":str(user["_id"]),
+        "user_id": str(user["_id"]),
         "access_token": access_token,
         "token_type": "Bearer",
         "message": "You are logged in.",
     }
 
 
-# Protected endpoint (Example)
 @app.get("/protected/")
 async def protected_route(current_user: str = Depends(get_current_user)):
     return {"message": f"Welcome {current_user}, you are signed in!"}
@@ -251,28 +253,41 @@ async def get_user(user_id: str, current_user: str = Depends(get_current_user)):
     posts_count = await db["posts"].count_documents({"user_id": user_object_id})
     comments_count = await db["comments"].count_documents({"user_id": user_object_id})
     likes_count = await db["likes"].count_documents({"user_id": user_object_id})
-    followers_count = await db["follows"].count_documents({"followee_id": user_object_id})
-    following_count = await db["follows"].count_documents({"follower_id": user_object_id})
+    followers_count = await db["follows"].count_documents(
+        {"followee_id": user_object_id}
+    )
+    following_count = await db["follows"].count_documents(
+        {"follower_id": user_object_id}
+    )
 
-    # Get user's posts
     posts = await db["posts"].find({"user_id": user_object_id}).to_list(length=100)
+    total_likes_count = 0
+
     for post in posts:
         post["_id"] = str(post["_id"])
         post["user_id"] = str(post["user_id"])
 
-    # Get user's comments with associated post details
-    comments = await db["comments"].find({"user_id": user_object_id}).to_list(length=100)
+        post_likes_count = await db["likes"].count_documents(
+            {"post_id": ObjectId(post["_id"])}
+        )
+        post["likes_count"] = post_likes_count
+        total_likes_count += post_likes_count
+
+        post_user = await db["users"].find_one({"_id": ObjectId(post["user_id"])})
+        post["username"] = post_user["username"] if post_user else "Unknown"
+
+    comments = (
+        await db["comments"].find({"user_id": user_object_id}).to_list(length=100)
+    )
     for comment in comments:
         comment["_id"] = str(comment["_id"])
         comment["user_id"] = str(comment["user_id"])
         comment["post_id"] = str(comment["post_id"])
-        
-        # Get the associated post's song_image
+        comment["date"] = str(comment["date"])
+
+
         post = await db["posts"].find_one({"_id": ObjectId(comment["post_id"])})
-        if post:
-            comment["song_image"] = post.get("song_image", None)
-        else:
-            comment["song_image"] = None
+        comment["song_image"] = post.get("song_image", None) if post else None
 
     return {
         "user": user,
@@ -281,10 +296,10 @@ async def get_user(user_id: str, current_user: str = Depends(get_current_user)):
         "stats": {
             "posts_count": posts_count,
             "comments_count": comments_count,
-            "likes_count": likes_count,
+            "likes_count": total_likes_count,
             "followers_count": followers_count,
-            "following_count": following_count
-        }
+            "following_count": following_count,
+        },
     }
 
 
@@ -300,12 +315,12 @@ class PostDetail(BaseModel):
 
 
 @app.get("/posts/")
-async def get_posts(current_user: str = Depends(get_current_user), search: Optional[str] = Query(None)):
+async def get_posts(
+    current_user: str = Depends(get_current_user), search: Optional[str] = Query(None)
+):
     if not search:
-        # If no search term, return all posts with user info
         posts = await db["posts"].find({}).to_list(length=100)
     else:
-        # Search in posts collection
         posts_pipeline = [
             {
                 "$match": {
@@ -313,7 +328,7 @@ async def get_posts(current_user: str = Depends(get_current_user), search: Optio
                         {"song_name": {"$regex": search, "$options": "i"}},
                         {"artist": {"$regex": search, "$options": "i"}},
                         {"album": {"$regex": search, "$options": "i"}},
-                        {"caption": {"$regex": search, "$options": "i"}}
+                        {"caption": {"$regex": search, "$options": "i"}},
                     ]
                 }
             }
@@ -325,7 +340,7 @@ async def get_posts(current_user: str = Depends(get_current_user), search: Optio
                 "$match": {
                     "$or": [
                         {"name": {"$regex": search, "$options": "i"}},
-                        {"username": {"$regex": search, "$options": "i"}}
+                        {"username": {"$regex": search, "$options": "i"}},
                     ]
                 }
             },
@@ -334,7 +349,7 @@ async def get_posts(current_user: str = Depends(get_current_user), search: Optio
                     "from": "posts",
                     "localField": "_id",
                     "foreignField": "user_id",
-                    "as": "user_posts"
+                    "as": "user_posts",
                 }
             },
             {"$unwind": "$user_posts"},
@@ -351,12 +366,12 @@ async def get_posts(current_user: str = Depends(get_current_user), search: Optio
                     "caption": "$user_posts.caption",
                     "user_id": "$user_posts.user_id",
                     "date": "$user_posts.date",
-                    "context_color": "$user_posts.context_color"
+                    "context_color": "$user_posts.context_color",
                 }
-            }
+            },
         ]
         user_posts = await db["users"].aggregate(users_pipeline).to_list(length=100)
-        
+
         posts = {str(post["_id"]): post for post in posts + user_posts}.values()
         posts = list(posts)
 
@@ -370,7 +385,9 @@ async def get_posts(current_user: str = Depends(get_current_user), search: Optio
             post["name"] = user.get("name", "Unknown")
             post["username"] = user.get("username", "Unknown")
 
-        post["likes_count"] = await db["likes"].count_documents({"post_id": post["_id"]})
+        post["likes_count"] = await db["likes"].count_documents(
+            {"post_id": ObjectId(post["_id"])}
+        )
 
     return {"posts": posts}
 
@@ -424,26 +441,30 @@ async def get_post(post_id: str, current_user: str = Depends(get_current_user)):
     if not post:
         raise HTTPException(status_code=404, detail="Post not found")
 
-    # Get comments for this post
-    comments = await db["comments"].find({"post_id": post_object_id}).to_list(length=100)
+    comments = (
+        await db["comments"].find({"post_id": post_object_id}).to_list(length=100)
+    )
     for comment in comments:
         comment["_id"] = str(comment["_id"])
         comment["user_id"] = str(comment["user_id"])
         comment["post_id"] = str(comment["post_id"])
-        # Add user info to each comment
         comment_user = await db["users"].find_one({"_id": ObjectId(comment["user_id"])})
         if comment_user:
             comment["name"] = comment_user.get("name")
             comment["username"] = comment_user.get("username")
 
-    # Get likes count
     likes_count = await db["likes"].count_documents({"post_id": post_object_id})
 
     # Check if the current user has liked the post
     user = await db["users"].find_one({"email": current_user})
     liked = False
     if user:
-        liked = await db["likes"].find_one({"user_id": user["_id"], "post_id": post_object_id}) is not None
+        liked = (
+            await db["likes"].find_one(
+                {"user_id": user["_id"], "post_id": post_object_id}
+            )
+            is not None
+        )
 
     # Convert ObjectId to string for JSON serialization
     post["_id"] = str(post["_id"])
@@ -459,7 +480,7 @@ async def get_post(post_id: str, current_user: str = Depends(get_current_user)):
         "post": post,
         "comments": comments,
         "likes_count": likes_count,
-        "liked": liked  # Return whether the current user has liked the post
+        "liked": liked,  # Return whether the current user has liked the post
     }
 
 
@@ -562,6 +583,7 @@ async def get_user_posts(user_id: str, current_user: str = Depends(get_current_u
         post["user_id"] = str(post["user_id"])
     return {"posts": posts}
 
+
 @app.get("/user/{user_id}/comments/")
 async def get_user_comments(
     user_id: str, current_user: str = Depends(get_current_user)
@@ -572,7 +594,9 @@ async def get_user_comments(
         raise HTTPException(status_code=400, detail="Invalid user ID format")
 
     # Fetch comments by user_id
-    comments = await db["comments"].find({"user_id": user_object_id}).to_list(length=100)
+    comments = (
+        await db["comments"].find({"user_id": user_object_id}).to_list(length=100)
+    )
 
     # Initialize a list to store enriched comments
     enriched_comments = []
@@ -586,7 +610,7 @@ async def get_user_comments(
         if post:
             comment["song_image"] = post.get("song_image", None)
         else:
-            comment["song_image"] = None 
+            comment["song_image"] = None
 
         enriched_comments.append(comment)
 
@@ -598,11 +622,10 @@ class UserUpdate(BaseModel):
     email: Optional[str] = None
     bio: Optional[str] = None
 
+
 @app.put("/user/{user_id}/")
 async def update_user(
-    user_id: str, 
-    user_data: UserUpdate, 
-    current_user: str = Depends(get_current_user)
+    user_id: str, user_data: UserUpdate, current_user: str = Depends(get_current_user)
 ):
     try:
         user_object_id = ObjectId(user_id)
@@ -611,27 +634,26 @@ async def update_user(
 
     user = await db["users"].find_one({"email": current_user})
     if not user or str(user["_id"]) != user_id:
-        raise HTTPException(status_code=403, detail="Not authorized to update this user")
+        raise HTTPException(
+            status_code=403, detail="Not authorized to update this user"
+        )
 
     update_data = {
-        k: v for k, v in user_data.dict(exclude_unset=True).items() 
-        if v is not None
+        k: v for k, v in user_data.dict(exclude_unset=True).items() if v is not None
     }
 
     if not update_data:
         raise HTTPException(status_code=400, detail="No valid update data provided")
 
     if "email" in update_data:
-        existing_user = await db["users"].find_one({
-            "email": update_data["email"],
-            "_id": {"$ne": user_object_id}
-        })
+        existing_user = await db["users"].find_one(
+            {"email": update_data["email"], "_id": {"$ne": user_object_id}}
+        )
         if existing_user:
             raise HTTPException(status_code=400, detail="Email already in use")
 
     result = await db["users"].update_one(
-        {"_id": user_object_id},
-        {"$set": update_data}
+        {"_id": user_object_id}, {"$set": update_data}
     )
 
     if result.modified_count == 0:
@@ -645,6 +667,6 @@ async def update_user(
         "user": {
             "name": updated_user["name"],
             "email": updated_user["email"],
-            "bio": updated_user.get("bio", "")
-        }
+            "bio": updated_user.get("bio", ""),
+        },
     }
